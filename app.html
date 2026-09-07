@@ -1,0 +1,166 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Grok HQ</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--bg:#0a0e14;--panel:#121820;--border:#243044;--fg:#e8eef7;--dim:#8b9bb4;--acc:#f59e0b;--ok:#34d399;--warn:#f472b6;--blue:#60a5fa}
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,Segoe UI,system-ui,sans-serif;background:var(--bg);color:var(--fg);display:flex;height:100vh;overflow:hidden}
+nav{width:210px;background:var(--panel);border-right:1px solid var(--border);padding:16px 0;flex-shrink:0}
+nav h1{font-size:15px;padding:0 18px 12px;margin:0;border-bottom:1px solid var(--border);letter-spacing:.02em}
+nav h1 span{color:var(--acc)}
+nav a{display:block;padding:10px 18px;color:var(--dim);text-decoration:none;font-size:13px;cursor:pointer}
+nav a.active,nav a:hover{color:var(--fg);background:#1a2332;border-right:2px solid var(--acc)}
+main{flex:1;overflow-y:auto;padding:24px 28px}
+h2{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin:26px 0 10px}
+.cards{display:flex;gap:12px;flex-wrap:wrap}.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px 18px;flex:1;min-width:170px}
+.card .big{font-size:24px;font-weight:700}.card .sub{font-size:11px;color:var(--dim);margin-top:4px}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;font-size:13px}
+td,th{padding:8px 12px;text-align:left;border-top:1px solid #1c2533}th{color:var(--dim);font-size:11px;text-transform:uppercase}
+.r{text-align:right;font-variant-numeric:tabular-nums}
+.chart{display:flex;align-items:flex-end;gap:5px;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;overflow-x:auto;min-height:120px}
+.bar{display:flex;flex-direction:column;align-items:center;min-width:30px}.stack{display:flex;flex-direction:column-reverse;width:22px;border-radius:3px;overflow:hidden}
+.lbl{font-size:9px;color:var(--dim);margin-top:4px}
+input,textarea,button{background:#0a0e14;color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:13px;font-family:inherit}
+textarea{width:100%;min-height:320px;font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.5}
+button{cursor:pointer;background:#b45309;border-color:#d97706}button.ghost{background:transparent;border-color:var(--border)}
+button:hover{filter:brightness(1.12)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}
+.pill{display:inline-block;font-size:10px;padding:2px 8px;border-radius:99px;border:1px solid var(--border);color:var(--dim)}
+.pill.on{color:var(--ok);border-color:var(--ok)}.pill.warn{color:var(--warn);border-color:var(--warn)}
+.msg{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin:8px 0;font-size:13px;white-space:pre-wrap;word-break:break-word}
+.msg.user{border-left:3px solid var(--acc)}.msg.assistant{border-left:3px solid var(--ok)}
+.snip{cursor:pointer}.snip:hover{background:#1a2332}
+.split{display:flex;gap:16px;height:calc(100vh - 120px)}.split .list{width:270px;overflow-y:auto;flex-shrink:0}
+.split .edit{flex:1;display:flex;flex-direction:column}.split .edit textarea{flex:1}
+.fileitem{padding:8px 10px;border-radius:8px;cursor:pointer;font-size:12px;color:var(--dim)}
+.fileitem:hover,.fileitem.sel{background:#1a2332;color:var(--fg)}
+.spin{color:var(--dim);font-size:12px}
+pre{white-space:pre-wrap;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;font-size:12px}
+.note{font-size:12px;color:var(--dim);line-height:1.5;margin-top:12px}
+</style></head><body>
+<nav>
+<h1>◈ <span>Grok</span> HQ</h1>
+<a data-t="overview" class="active">Overview</a>
+<a data-t="sessions">Sessions</a>
+<a data-t="brain">Brief & Digests</a>
+<a data-t="mods">Agents · Skills</a>
+<a data-t="center">Command Center</a>
+<a data-t="about">Setup</a>
+</nav>
+<main id="main"><div class="spin">loading…</div></main>
+<script>
+const $=s=>document.querySelector(s), M=document.getElementById('main');
+const COLORS={'grok-4':'#f59e0b','grok-3':'#60a5fa','grok-3-mini':'#34d399','grok-2':'#a78bfa','grok-2-vision':'#f472b6'};
+const api=p=>fetch(p).then(r=>r.json());
+const post=(p,b)=>fetch(p,{method:'POST',body:JSON.stringify(b)}).then(r=>r.json());
+const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+document.querySelectorAll('nav a').forEach(a=>a.onclick=()=>{
+  document.querySelectorAll('nav a').forEach(x=>x.classList.remove('active'));
+  a.classList.add('active'); TABS[a.dataset.t]();
+});
+
+const TABS={
+async overview(){
+  M.innerHTML='<div class="spin">reading local usage…</div>';
+  const o=await api('/api/overview?days=14');
+  const models=Object.keys(o.by_model||{}).sort((a,b)=>o.by_model[b].cost-o.by_model[a].cost);
+  const maxd=Math.max(...(o.by_day||[]).map(d=>Object.values(d.models).reduce((a,b)=>a+b,0)),1);
+  const empty=!o.msgs;
+  M.innerHTML=`
+  <div class="cards">
+   <div class="card"><div class="big">$${(o.win24h||0).toFixed(2)}</div><div class="sub">LAST 24H · ${esc(Object.entries(o.win24h_detail||{}).map(([m,v])=>m+' $'+v.toFixed(2)).join(' · '))||'—'}</div></div>
+   <div class="card"><div class="big">$${(o.win7d||0).toFixed(2)}</div><div class="sub">LAST 7 DAYS</div></div>
+   <div class="card"><div class="big">$${(o.total||0).toFixed(2)}</div><div class="sub">TOTAL ${o.days}D · ${o.msgs||0} turns</div></div>
+   <div class="card"><div class="big" style="font-size:16px">${o.has_api_key?'KEY SET':'NO KEY'}</div><div class="sub">XAI_API_KEY in env (local only — not sent anywhere)</div></div>
+  </div>
+  ${empty?`<p class="note">No local usage logs yet. Append JSONL to <code>~/.grok-hq/usage/</code> or embed usage on assistant turns in sessions. Authoritative spend lives at console.x.ai — this panel estimates from what you log.</p>`:''}
+  <h2>Daily burn</h2>
+  <div class="chart">${(o.by_day||[]).length?(o.by_day.map(d=>{
+    const tot=Object.values(d.models).reduce((a,b)=>a+b,0);
+    return `<div class="bar"><div class="stack">${Object.entries(d.models).map(([m,v])=>`<div title="${esc(m)}: $${v.toFixed(2)}" style="height:${Math.max(2,v/maxd*100)}px;background:${COLORS[m]||'#888'}"></div>`).join('')}</div><span class="lbl">${d.day.slice(5)}</span><span class="lbl">$${tot.toFixed(1)}</span></div>`;
+  }).join('')):'<span class="lbl">no data</span>'}</div>
+  <h2>By model</h2>
+  <table><tr><th>Model</th><th class="r">Turns</th><th class="r">In tok</th><th class="r">Out tok</th><th class="r">Est $</th></tr>
+  ${models.length?models.map(m=>{const b=o.by_model[m];return `<tr><td>${esc(m)}</td><td class="r">${b.msgs|0}</td><td class="r">${((b.in||0)/1e3).toFixed(1)}k</td><td class="r">${((b.out||0)/1e3).toFixed(1)}k</td><td class="r">$${(b.cost||0).toFixed(2)}</td></tr>`}).join(''):'<tr><td colspan="5" style="color:var(--dim)">empty</td></tr>'}</table>
+  <h2>By project</h2>
+  <table>${(o.by_project||[]).length?o.by_project.map(([p,c])=>`<tr><td>${esc(p)}</td><td class="r">$${c.toFixed(2)}</td></tr>`).join(''):'<tr><td style="color:var(--dim)">empty</td></tr>'}</table>`;
+},
+async sessions(){
+  M.innerHTML=`<div class="row"><input id="q" placeholder="search local conversations… (enter)" style="flex:1">
+  <button class="ghost" onclick="TABS.sessions()">recent</button></div><div id="out"><div class="spin">loading…</div></div>`;
+  $('#q').onkeydown=async e=>{if(e.key!=='Enter')return;
+    $('#out').innerHTML='<div class="spin">searching…</div>';
+    const hits=await api('/api/search?q='+encodeURIComponent($('#q').value));
+    $('#out').innerHTML=hits.length?hits.map(h=>`<div class="msg snip" onclick="openSession('${esc(h.sid)}')"><b>${h.date} · ${esc(h.project)} · ${h.role}</b><br>…${esc(h.snippet)}…</div>`).join(''):'no matches';};
+  const ss=await api('/api/sessions?n=40');
+  $('#out').innerHTML=ss.length?`<table><tr><th>When</th><th>Project</th><th>First message</th></tr>
+  ${ss.map(s=>`<tr class="snip" onclick="openSession('${esc(s.sid)}')"><td>${s.mtime}</td><td>${esc(s.project)}</td><td style="color:var(--dim);font-size:12px">${esc(s.first)}</td></tr>`).join('')}</table>`
+  :'<p class="note">No sessions yet. Run <code>hq install</code> to seed demos, or write JSONL under <code>~/.grok-hq/sessions/</code>.</p>';
+},
+async brain(){
+  M.innerHTML='<div class="spin">compiling brief…</div>';
+  const b=await api('/api/brief');
+  const tree=await api('/api/tree');
+  const digs=tree.digests||[];
+  M.innerHTML=`<h2>Live briefing</h2><pre>${esc(b.brief)}</pre>
+  <h2>Digest cards (${digs.length})</h2>
+  <div class="list">${digs.map(f=>`<div class="fileitem" onclick="loadFile('${esc(f.path)}')">${esc(f.name)}</div>`).join('')||'<span class="lbl">none yet — hq compile</span>'}
+  </div><div id="dview"></div>`;
+},
+async mods(){ fileManager(['agents','skills','policy'],'Agents = delegated workers. Skills = abilities agents can load. Edits under ~/.grok-hq apply to tools that read that tree.'); },
+async center(){
+  M.innerHTML='<div class="spin">building catalog…</div>';
+  const c=await api('/api/catalog');
+  const item=x=>`<tr class="snip" onclick="navigator.clipboard.writeText('${esc(x.invoke).replace(/'/g,"\\'")}');this.style.outline='1px solid var(--ok)';setTimeout(()=>this.style.outline='',600)">
+    <td><b>${esc(x.name)}</b></td><td style="color:var(--dim);font-size:12px">${esc(x.desc)||'—'}</td>
+    <td><code style="font-size:11px;color:var(--acc)">${esc(x.invoke)}</code></td></tr>`;
+  M.innerHTML=`<div class="row"><span class="pill ${c.autopilot?'on':'warn'}">autopilot ${c.autopilot?'ON':'OFF'}</span>
+  <span class="lbl">click a row to copy</span></div>
+  <h2>CLI</h2><table><tr><th>Name</th><th>What</th><th>Invoke</th></tr>${(c.commands||[]).map(item).join('')}</table>
+  <h2>Agents</h2><table><tr><th>Name</th><th>What</th><th>Invoke</th></tr>${(c.agents||[]).map(item).join('')||'<tr><td colspan=3 style="color:var(--dim)">run hq install</td></tr>'}</table>
+  <h2>Skills</h2><table><tr><th>Name</th><th>What</th><th>Invoke</th></tr>${(c.skills||[]).map(item).join('')||'<tr><td colspan=3 style="color:var(--dim)">run hq install</td></tr>'}</table>`;
+},
+async about(){
+  const a=await api('/api/adapters');
+  M.innerHTML=`<h2>30-second install</h2><pre>git clone https://github.com/mohanadbarakattt/grok-hq && cd grok-hq
+python3 hq.py install
+alias hq='python3 $(pwd)/hq.py'
+hq serve   # → http://127.0.0.1:8765</pre>
+  <h2>What this is</h2>
+  <p class="note">Grok / xAI counterpart to Claude HQ. Local mission control: usage estimates from logs you write, searchable session store, digest briefings, and a stdlib dashboard. No telemetry. No secrets in the repo.</p>
+  <h2>Adapters</h2><pre>${esc(a.text)}</pre>
+  <h2>Uninstall</h2><pre>python3 hq.py uninstall
+# or wipe everything: rm -rf ~/.grok-hq</pre>`;
+}};
+
+async function fileManager(kinds,blurb){
+  M.innerHTML='<div class="spin">loading…</div>';
+  const tree=await api('/api/tree');
+  const files=kinds.flatMap(k=>tree[k]||[]);
+  M.innerHTML=`<p class="note">${blurb}</p><div class="split">
+  <div class="list">${files.map((f,i)=>`<div class="fileitem" data-i="${i}">${esc(f.kind)} · ${esc(f.name)}</div>`).join('')}
+  </div>
+  <div class="edit"><div class="row"><input id="fpath" style="flex:1" readonly><button onclick="saveFile()">Save</button><span class="spin" id="fs"></span></div>
+  <textarea id="fbody" placeholder="select a file"></textarea></div></div>`;
+  document.querySelectorAll('.fileitem[data-i]').forEach(el=>el.onclick=async()=>{
+    document.querySelectorAll('.fileitem').forEach(x=>x.classList.remove('sel'));el.classList.add('sel');
+    const f=files[el.dataset.i];$('#fpath').value=f.path;
+    const r=await api('/api/file?path='+encodeURIComponent(f.path));
+    $('#fbody').value=r.content??('ERROR: '+r.error);});
+}
+async function saveFile(){
+  const r=await post('/api/file',{path:$('#fpath').value,content:$('#fbody').value});
+  $('#fs').textContent=r.ok?'saved':'error: '+(r.error||'');setTimeout(()=>$('#fs').textContent='',2500);
+}
+async function loadFile(path){
+  const r=await api('/api/file?path='+encodeURIComponent(path));
+  const el=$('#dview'); if(el) el.innerHTML=`<h2>${esc(path)}</h2><pre>${esc(r.content||r.error||'')}</pre>`;
+}
+async function openSession(sid){
+  M.innerHTML='<div class="spin">loading session…</div>';
+  const ms=await api('/api/session?id='+encodeURIComponent(sid));
+  M.innerHTML=`<div class="row"><button class="ghost" onclick="TABS.sessions()">← back</button><b>${esc(sid.slice(0,12))}</b></div>`+
+    (ms.length?ms.map(m=>`<div class="msg ${m.role}"><b>${m.role}</b><br>${esc(m.text)}</div>`).join(''):'<p class="note">empty</p>');
+}
+TABS.overview();
+setInterval(()=>{const t=document.querySelector('nav a.active')?.dataset.t;
+  if(['overview','sessions'].includes(t))TABS[t]();},120000);
+</script></body></html>

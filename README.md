@@ -1,2 +1,69 @@
-# grok-hq
-Mission control for Grok / xAI — open-source counterpart to Claude HQ
+# Grok HQ
+
+**Mission control for builders using Grok / xAI.** Open-source counterpart to [Claude HQ](https://github.com/mohanadbarakattt/claude-hq).
+
+One stdlib Python CLI + a local dashboard. Know your burn (when you log it), search past sessions, compile digests into a briefing, install a small agent doctrine tree under `~/.grok-hq/`. No telemetry. No secrets in the repo. Your data stays on the machine.
+
+## Install (30 seconds)
+
+```bash
+git clone https://github.com/mohanadbarakattt/grok-hq && cd grok-hq
+python3 hq.py install
+alias hq='python3 $(pwd)/hq.py'   # add to your shell rc
+hq serve                          # → http://127.0.0.1:8765
+```
+
+`install` writes inspectable, reversible files under `~/.grok-hq/`:
+
+- `agents/{executor,grunt,reviewer}.md` — delegate / verify doctrine
+- `skills/recall/SKILL.md` — how agents run `hq search`
+- `POLICY.md` — builder policy block
+- empty (or demo-seeded) `sessions/`, `usage/`, `digests/`
+
+## Commands
+
+```bash
+hq usage                 # local usage estimate (honest empty state)
+hq sessions              # recent JSONL sessions
+hq search "auth bug"     # full-text search
+hq show demo-001         # replay a session
+hq compile               # digest cards → ~/.grok-hq/digests/
+hq brief                 # compiled briefing
+hq serve                 # local web panel
+hq autopilot             # Linux loop + cron/systemd notes
+hq uninstall             # remove agents/skills/policy (keeps your sessions)
+hq version
+```
+
+## Why it exists
+
+Grok is useful. The tooling around it is still thin compared to Claude Code's local transcript world. Grok HQ gives you a **clear local contract**:
+
+1. **Usage** — aggregate `~/.grok-hq/usage/*.jsonl` and usage embeds in sessions. If `XAI_API_KEY` is set we acknowledge it; we do **not** pretend the key reveals live billing. Authoritative spend: [console.x.ai](https://console.x.ai).
+2. **Recall** — index/search `~/.grok-hq/sessions/*.jsonl`. Stub adapters for grok.com export / IDE stores are documented with TODOs.
+3. **Compile / brief** — dense digest cards + a briefing you can paste into a new chat.
+4. **Serve** — stdlib `http.server` + single `app.html` panel.
+5. **Install** — optional policy/agents/skills under `~/.grok-hq/`.
+6. **Autopilot** — recompile digests every 10 minutes (loop script on Linux; cron/systemd/launchd documented).
+
+## Session format
+
+One JSON object per line in `~/.grok-hq/sessions/<id>.jsonl`:
+
+```json
+{"role":"user","text":"Ship the rate-limit fix","ts":"2026-09-07T12:00:00Z","project":"radar"}
+{"role":"assistant","text":"Done. Verified with …","ts":"2026-09-07T12:04:00Z","model":"grok-3","usage":{"input_tokens":1200,"output_tokens":400}}
+```
+
+Tools and agents can append freely. Demo samples ship under `demo/sessions/`.
+
+## Uninstall
+
+```bash
+python3 hq.py uninstall          # removes agents/skills/policy/config
+rm -rf ~/.grok-hq                # nuclear — also deletes sessions/digests
+```
+
+## License
+
+MIT © 2026 Mohanad Barakat

@@ -1,0 +1,2 @@
+{"role": "user", "text": "Fix the rate-limit retry on the radar ingest job \u2014 exponential backoff, cap at 5 attempts, log attempt number.", "ts": "2026-09-06T10:00:00+00:00", "project": "radar"}
+{"role": "assistant", "text": "Patched ingest.py: backoff 0.5*2^n seconds, max 5, structured log field attempt=. Ran unit test test_retry_backoff \u2014 pass.", "ts": "2026-09-06T11:00:00+00:00", "model": "grok-3-mini", "usage": {"input_tokens": 2400, "output_tokens": 500}, "project": "radar"}
