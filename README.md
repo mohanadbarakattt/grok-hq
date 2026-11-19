@@ -20,6 +20,35 @@ hq serve                          # → http://127.0.0.1:8765
 - `POLICY.md` — builder policy block
 - empty (or demo-seeded) `sessions/`, `usage/`, `digests/`
 
+## Keep all your AI tools on the same page (`hq sync`)
+
+Grokbot, Claude, ChatGPT/Codex and Cursor each keep their own memory. `hq sync` connects them:
+
+- **One shared memory file:** `~/.grok-hq/hub/MEMORY.md`. Write who you are, your projects and your decisions once. Every tool is told to append new durable facts under `## Inbox`, so what one AI learns, the others see.
+- **Pull:** imports history from the Grok Bot desktop app (`%APPDATA%\Grok Bot`, auto-detected), Claude Code (`~/.claude/projects`), Codex (`~/.codex/sessions`) and any folder you point it at into `~/.grok-hq/sessions/<tool>/`. Searchable with `hq search`.
+- **Push:** writes one context block (shared memory + recent work from *all* tools) into:
+  - `~/.claude/CLAUDE.md` (Claude Code, all projects)
+  - `~/.codex/AGENTS.md` (Codex)
+  - any file you list, such as Grokbot's memory/rules file
+  - each project you add: `AGENTS.md` (Codex/Cursor/Grok), `CLAUDE.md`, `.cursor/rules/grok-hq.mdc`
+  - paste-ready text for web apps (ChatGPT custom instructions, claude.ai project, grok.com) in `~/.grok-hq/hub/paste/`
+
+  The block sits between `<!-- grok-hq:begin -->` / `<!-- grok-hq:end -->`. Your own text is never touched, and the first edit of any existing file is backed up to `~/.grok-hq/backups/`.
+
+```powershell
+python hq.py install
+python hq.py sync --status                          # what's detected
+python hq.py sync --probe-grokbot                   # Grok Bot storage format (no chat text shown)
+notepad $HOME\.grok-hq\sync.json                   # set Grokbot history folder + memory file
+python hq.py sync --add-project "C:\code\myapp"    # optional, per project
+python hq.py sync --dry-run                         # preview
+python hq.py sync                                   # do it
+python hq.py autopilot                              # Windows Task Scheduler: sync every 10 min
+python hq.py sync --remove                          # undo: strip all blocks
+```
+
+Cursor's own chat history lives in SQLite and isn't imported yet, but Cursor still *receives* the shared context through the project rule file.
+
 ## Commands
 
 ```bash
@@ -30,7 +59,9 @@ hq show demo-001         # replay a session
 hq compile               # digest cards → ~/.grok-hq/digests/
 hq brief                 # compiled briefing
 hq serve                 # local web panel
-hq autopilot             # Linux loop + cron/systemd notes
+hq sync                  # pull history from all AIs + push shared context to all
+hq memory                # show the shared memory file
+hq autopilot             # sync every 10 min (Windows Task Scheduler / Linux loop)
 hq uninstall             # remove agents/skills/policy (keeps your sessions)
 hq version
 ```
