@@ -323,10 +323,23 @@ class Hub:
         log(f"  persistence blobs: {len(files)}  by kind: {kinds}")
         tr = self._grokbot_files()
         log(f"  transcript blobs : {len(tr)}")
-        for f in sorted(tr, key=os.path.getmtime, reverse=True)[:5]:
-            with open(f, "rb") as fh:
-                head = fh.read(16)
-            kind, data = self.load_blob(f)
+        def mtime(f):
+            try:
+                return os.path.getmtime(f)
+            except OSError:
+                return 0
+        shown = 0
+        for f in sorted(tr, key=mtime, reverse=True):
+            if shown >= 5:
+                break
+            try:  # Grok Bot rewrites blobs while running; a file can vanish mid-probe
+                size = os.path.getsize(f)
+                with open(f, "rb") as fh:
+                    head = fh.read(16)
+                kind, data = self.load_blob(f)
+            except OSError:
+                continue
+            shown += 1
             shape = ""
             if kind == "json":
                 shape = ("keys=" + ",".join(list(data.keys())[:12])) if isinstance(data, dict) \
@@ -337,7 +350,7 @@ class Hub:
             roles = {}
             for m in msgs:
                 roles[m["role"]] = roles.get(m["role"], 0) + 1
-            log(f"   - {os.path.getsize(f):>9} B  head={head.hex()}  {kind:<6} {shape[:90]}  "
+            log(f"   - {size:>9} B  head={head.hex()}  {kind:<6} {shape[:90]}  "
                 f"messages={roles or 0}")
         log("\n  (no message text is shown — safe to paste this output)")
 
@@ -442,7 +455,10 @@ class Hub:
             jobs += [(_slug(ex.get("name") or "extra"), f, self.parse_generic) for f in files]
         stats = {}
         for source, f, parser in jobs:
-            r = self._import(source, f, parser, dry)
+            try:
+                r = self._import(source, f, parser, dry)
+            except OSError:  # file moved/rewritten by its app mid-sync; next sync gets it
+                r = "skip"
             s = stats.setdefault(source, {"new": 0, "fresh": 0, "skip": 0})
             s[r] += 1
         for source, s in sorted(stats.items()):
