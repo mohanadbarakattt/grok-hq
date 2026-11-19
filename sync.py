@@ -99,6 +99,17 @@ def _jsonl(path):
         return
 
 
+def lp(path):
+    """Windows long-path form. Grok Bot's base32 blob names push full paths past
+    the 260-char MAX_PATH limit: glob lists them but open()/stat() fail."""
+    if os.name == "nt" and path and not path.startswith("\\\\?\\"):
+        ap = os.path.abspath(path)
+        if ap.startswith("\\\\"):  # UNC share
+            return "\\\\?\\UNC\\" + ap[2:]
+        return "\\\\?\\" + ap
+    return path
+
+
 def _slug(s, n=40):
     s = re.sub(r"[^A-Za-z0-9._-]+", "-", s or "").strip("-")
     return (s or "local")[:n]
@@ -199,7 +210,7 @@ class Hub:
     @staticmethod
     def load_blob(path):
         """Return (kind, data). kind: json | jsonl | text | binary."""
-        with open(path, "rb") as f:
+        with open(lp(path), "rb") as f:
             raw = f.read()
         for fn in (gzip.decompress, zlib.decompress,
                    lambda b: zlib.decompress(b, -15)):
@@ -325,19 +336,20 @@ class Hub:
         log(f"  transcript blobs : {len(tr)}")
         def mtime(f):
             try:
-                return os.path.getmtime(f)
+                return os.path.getmtime(lp(f))
             except OSError:
                 return 0
-        shown = 0
+        shown, errors = 0, {}
         for f in sorted(tr, key=mtime, reverse=True):
             if shown >= 5:
                 break
             try:  # Grok Bot rewrites blobs while running; a file can vanish mid-probe
-                size = os.path.getsize(f)
-                with open(f, "rb") as fh:
+                size = os.path.getsize(lp(f))
+                with open(lp(f), "rb") as fh:
                     head = fh.read(16)
                 kind, data = self.load_blob(f)
-            except OSError:
+            except OSError as e:
+                errors[type(e).__name__] = errors.get(type(e).__name__, 0) + 1
                 continue
             shown += 1
             shape = ""
@@ -352,6 +364,8 @@ class Hub:
                 roles[m["role"]] = roles.get(m["role"], 0) + 1
             log(f"   - {size:>9} B  head={head.hex()}  {kind:<6} {shape[:90]}  "
                 f"messages={roles or 0}")
+        if errors:
+            log(f"  read errors: {errors}")
         log("\n  (no message text is shown — safe to paste this output)")
 
     def _codex_files(self):
@@ -410,7 +424,7 @@ class Hub:
         # project folder is decided after parsing; look for an existing copy first
         existing = glob.glob(os.path.join(dst_dir, "*", sid + ".jsonl"))
         try:
-            src_m = os.path.getmtime(path)
+            src_m = os.path.getmtime(lp(path))
         except OSError:
             return "skip"
         if existing and os.path.getmtime(existing[0]) >= src_m:
