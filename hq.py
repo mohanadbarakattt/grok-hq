@@ -888,6 +888,8 @@ def build_parser():
     py.add_argument("--push-only", action="store_true")
     py.add_argument("--add-project", metavar="PATH", help="also sync into this project folder")
     py.add_argument("--remove", action="store_true", help="remove grok-hq blocks from all targets")
+    py.add_argument("--probe-grokbot", action="store_true",
+                    help="describe Grok Bot app storage (no chat text shown)")
     sub.add_parser("memory", help="show the shared memory file")
     sub.add_parser("version", help="print version")
     return p
@@ -927,6 +929,9 @@ def main(argv=None):
     elif args.cmd == "serve":
         cmd_serve(args.port)
     elif args.cmd == "sync":
+        if args.probe_grokbot:
+            hub().probe_grokbot()
+            return 0
         cmd_sync(status=args.status, dry=args.dry_run, pull=not args.push_only,
                  push=not args.pull_only, add_project=args.add_project, remove=args.remove)
     elif args.cmd == "memory":

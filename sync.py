@@ -16,6 +16,9 @@ import json
 import os
 import re
 import shutil
+import base64
+import gzip
+import zlib
 from datetime import datetime, timezone
 
 BEGIN = "<!-- grok-hq:begin -->"
@@ -45,10 +48,8 @@ DEFAULT_CONFIG = {
     "pull": {
         "claude_code": True,
         "codex": True,
-        "extra": [
-            {"name": "grokbot", "path": "", "glob": "**/*.jsonl",
-             "_help": "Set path to the folder where Grokbot keeps its chat history."}
-        ],
+        "grokbot_app": True,
+        "extra": [],
     },
     "push": {
         "claude_global": True,
@@ -159,6 +160,187 @@ class Hub:
     def _claude_files(self):
         return glob.glob(os.path.join(self.home, ".claude", "projects", "*", "*.jsonl"))
 
+    # ---- Grok Bot desktop app (Electron). Chats live in
+    #      %APPDATA%\Grok Bot\sand-client-persistence\<base32 name>.blob
+    #      where the decoded name ends in ".transcript.replicas.<conversation-id>".
+
+    def grokbot_dir(self):
+        cands = []
+        if os.environ.get("APPDATA"):
+            cands.append(os.path.join(os.environ["APPDATA"], "Grok Bot"))
+        cands += [os.path.join(self.home, "AppData", "Roaming", "Grok Bot"),
+                  os.path.join(self.home, "Library", "Application Support", "Grok Bot"),
+                  os.path.join(self.home, ".config", "Grok Bot")]
+        for c in cands:
+            if os.path.isdir(c):
+                return c
+        return None
+
+    @staticmethod
+    def decode_blob_name(path):
+        stem = os.path.basename(path)
+        stem = stem[:-5] if stem.endswith(".blob") else stem
+        try:
+            s = stem.upper()
+            return base64.b32decode(s + "=" * (-len(s) % 8)).decode("utf-8", "replace")
+        except (ValueError, UnicodeDecodeError):
+            return ""
+
+    def _grokbot_files(self):
+        root = self.grokbot_dir()
+        if not root:
+            return []
+        out = []
+        for f in glob.glob(os.path.join(root, "sand-client-persistence", "*.blob")):
+            if ".transcript.replicas." in self.decode_blob_name(f):
+                out.append(f)
+        return out
+
+    @staticmethod
+    def load_blob(path):
+        """Return (kind, data). kind: json | jsonl | text | binary."""
+        with open(path, "rb") as f:
+            raw = f.read()
+        for fn in (gzip.decompress, zlib.decompress,
+                   lambda b: zlib.decompress(b, -15)):
+            try:
+                raw = fn(raw)
+                break
+            except (OSError, zlib.error, EOFError):
+                continue
+        try:
+            txt = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return "binary", raw
+        txt = txt.lstrip("\ufeff")
+        try:
+            return "json", json.loads(txt)
+        except json.JSONDecodeError:
+            pass
+        rows = []
+        for line in txt.splitlines():
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+        if rows:
+            return "jsonl", rows
+        return "text", txt
+
+    ROLE_KEYS = ("role", "sender", "author", "speaker", "from", "type")
+    TEXT_KEYS = ("text", "content", "message", "body", "markdown", "query", "response", "parts")
+    ROLE_MAP = {"user": "user", "human": "user", "me": "user",
+                "assistant": "assistant", "grok": "assistant", "bot": "assistant",
+                "model": "assistant", "ai": "assistant", "agent": "assistant"}
+
+    @classmethod
+    def _msg_from(cls, d):
+        role = None
+        for k in cls.ROLE_KEYS:
+            v = d.get(k)
+            if isinstance(v, dict):
+                v = v.get("role") or v.get("name")
+            if isinstance(v, str) and v.lower() in cls.ROLE_MAP:
+                role = cls.ROLE_MAP[v.lower()]
+                break
+        if not role:
+            return None
+        txt = ""
+        for k in cls.TEXT_KEYS:
+            if k in d:
+                txt = _HQ.text_of(d[k]) if not isinstance(d[k], str) else d[k]
+                if isinstance(d[k], list) and not txt:
+                    txt = "\n".join(str(p) for p in d[k] if isinstance(p, str))
+                if txt and txt.strip():
+                    break
+        if not txt or not str(txt).strip():
+            return None
+        ts = None
+        for k in ("createdAt", "created_at", "timestamp", "ts", "createTime", "time", "date"):
+            if d.get(k):
+                ts = d[k]
+                if isinstance(ts, (int, float)) and ts > 1e12:
+                    ts = ts / 1000.0
+                break
+        return {"role": role, "text": str(txt).strip(), "ts": ts,
+                "model": d.get("model") or d.get("modelName")}
+
+    @classmethod
+    def walk_messages(cls, data):
+        found, seen = [], set()
+
+        def walk(x, depth=0):
+            if depth > 40:
+                return
+            if isinstance(x, dict):
+                m = cls._msg_from(x)
+                if m:
+                    key = (m["role"], m["text"][:200])
+                    if key not in seen:
+                        seen.add(key)
+                        found.append(m)
+                    return
+                for v in x.values():
+                    walk(v, depth + 1)
+            elif isinstance(x, list):
+                for v in x:
+                    walk(v, depth + 1)
+            elif isinstance(x, str) and len(x) > 20 and x.lstrip()[:1] in "[{":
+                try:
+                    walk(json.loads(x), depth + 1)  # JSON stored as a string
+                except json.JSONDecodeError:
+                    pass
+
+        walk(data)
+        if found and all(m["ts"] for m in found):
+            try:
+                found.sort(key=lambda m: float(m["ts"]) if isinstance(m["ts"], (int, float))
+                           else _HQ.parse_ts(m["ts"]).timestamp())
+            except (TypeError, ValueError, AttributeError):
+                pass
+        return found
+
+    @classmethod
+    def parse_grokbot(cls, path):
+        kind, data = cls.load_blob(path)
+        if kind in ("binary", "text"):
+            return
+        for m in cls.walk_messages(data):
+            yield None, m
+
+    def probe_grokbot(self, log=print):
+        """Describe Grok Bot storage WITHOUT printing any chat content."""
+        root = self.grokbot_dir()
+        log(f"Grok Bot app folder: {root or 'NOT FOUND'}")
+        if not root:
+            return
+        files = glob.glob(os.path.join(root, "sand-client-persistence", "*.blob"))
+        kinds = {}
+        for f in files:
+            n = self.decode_blob_name(f)
+            k = n.split(".")[5] if n.count(".") > 5 else n[:40]
+            kinds[k] = kinds.get(k, 0) + 1
+        log(f"  persistence blobs: {len(files)}  by kind: {kinds}")
+        tr = self._grokbot_files()
+        log(f"  transcript blobs : {len(tr)}")
+        for f in sorted(tr, key=os.path.getmtime, reverse=True)[:5]:
+            with open(f, "rb") as fh:
+                head = fh.read(16)
+            kind, data = self.load_blob(f)
+            shape = ""
+            if kind == "json":
+                shape = ("keys=" + ",".join(list(data.keys())[:12])) if isinstance(data, dict) \
+                    else f"list[{len(data)}]"
+            elif kind == "jsonl":
+                shape = f"rows={len(data)}"
+            msgs = self.walk_messages(data) if kind in ("json", "jsonl") else []
+            roles = {}
+            for m in msgs:
+                roles[m["role"]] = roles.get(m["role"], 0) + 1
+            log(f"   - {os.path.getsize(f):>9} B  head={head.hex()}  {kind:<6} {shape[:90]}  "
+                f"messages={roles or 0}")
+        log("\n  (no message text is shown — safe to paste this output)")
+
     def _codex_files(self):
         root = os.environ.get("CODEX_HOME") or os.path.join(self.home, ".codex")
         return glob.glob(os.path.join(root, "sessions", "**", "*.jsonl"), recursive=True)
@@ -205,7 +387,13 @@ class Hub:
 
     def _import(self, source, path, parser, dry):
         dst_dir = os.path.join(self.hq.SESSIONS_DIR, source)
-        sid = _slug(os.path.splitext(os.path.basename(path))[0], 80)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if source == "grokbot" and ".transcript.replicas." in self.decode_blob_name(path):
+            stem = "grok-" + self.decode_blob_name(path).rsplit(".transcript.replicas.", 1)[1]
+        if len(stem) > 80:  # keep ids unique when names share a long prefix
+            import hashlib
+            stem = stem[:60] + "-" + hashlib.sha1(stem.encode()).hexdigest()[:12]
+        sid = _slug(stem, 80)
         # project folder is decided after parsing; look for an existing copy first
         existing = glob.glob(os.path.join(dst_dir, "*", sid + ".jsonl"))
         try:
@@ -241,6 +429,8 @@ class Hub:
         pc = cfg["pull"]
         if pc.get("claude_code"):
             jobs += [("claude", f, self.parse_claude) for f in self._claude_files()]
+        if pc.get("grokbot_app"):
+            jobs += [("grokbot", f, self.parse_grokbot) for f in self._grokbot_files()]
         if pc.get("codex"):
             jobs += [("codex", f, self.parse_codex) for f in self._codex_files()]
         for ex in pc.get("extra") or []:
@@ -410,6 +600,8 @@ on the same page. Treat it as background context, not as a task.
             path = self.p(ex.get("path"))
             ok = bool(path) and os.path.isdir(path)
             log(f"    {mark(ok)} {ex.get('name', 'extra'):<13} {path or '(path not set in sync.json)'}")
+        gb = self._grokbot_files()
+        log(f"    {mark(bool(gb))} Grok Bot      {len(gb)} chats in {self.grokbot_dir() or '%APPDATA%/Grok Bot (not found)'}")
         log("    n/a     Cursor chat   stored in SQLite; not imported (Cursor still receives context)")
         log("\n  PUSH (context out)")
         for name, path, _ in self.targets(cfg):
