@@ -157,7 +157,7 @@ def api_catalog():
         name = os.path.splitext(os.path.basename(f))[0]
         model = ""
         try:
-            mm = re.search(r"^model:\s*(\S+)", open(f).read(2000), re.M)
+            mm = re.search(r"^model:\s*(\S+)", open(f, encoding="utf-8").read(2000), re.M)
             model = mm.group(1) if mm else ""
         except OSError:
             pass
@@ -225,7 +225,7 @@ class Handler(BaseHTTPRequestHandler):
                 path = os.path.expanduser(unquote(q.get("path", [""])[0]))
                 if not safe_path(path):
                     return self.send_json({"error": "path not allowed"}, 403)
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     self.send_json({"content": f.read()})
             else:
                 self.send_json({"error": "not found"}, 404)
@@ -244,7 +244,7 @@ class Handler(BaseHTTPRequestHandler):
                 parent = os.path.dirname(path)
                 if parent:
                     os.makedirs(parent, exist_ok=True)
-                with open(path, "w") as f:
+                with open(path, "w", encoding="utf-8") as f:
                     f.write(data.get("content", ""))
                 self.send_json({"ok": True})
             else:

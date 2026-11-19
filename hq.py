@@ -12,7 +12,10 @@ Commands:
   compile [--force]     compile sessions into dense digest cards
   brief [--days N]      compiled briefing of recent work
   serve [--port N]      local web dashboard (127.0.0.1)
-  autopilot [off|tick]  Linux-friendly background recompile (cron/systemd/loop)
+  sync [--status|--dry-run|--pull-only|--push-only|--add-project P|--remove]
+                        keep ALL your AI tools on the same page (see sync.py)
+  memory                print the shared memory file path + contents
+  autopilot [on|off|tick]  sync + recompile every 10 min (Windows Task Scheduler / loop)
   version               print version
 """
 from __future__ import annotations
@@ -28,7 +31,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 HOME = os.path.expanduser("~")
 HQ_DIR = os.path.dirname(os.path.abspath(__file__))
 GROK_HQ = os.path.join(HOME, ".grok-hq")
@@ -155,7 +158,7 @@ def iter_messages(path):
        "model":..., "usage":{...}, "project":...}
     """
     try:
-        with open(path, "r", errors="replace") as f:
+        with open(path, "r", errors="replace", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -250,7 +253,7 @@ def collect_usage(days):
     for path in iter_usage_logs(days):
         agg["sources"].append(path)
         try:
-            with open(path, "r", errors="replace") as f:
+            with open(path, "r", errors="replace", encoding="utf-8") as f:
                 for line in f:
                     try:
                         d = json.loads(line)
@@ -484,11 +487,11 @@ def cmd_compile(force=False, quiet=False):
             r = compile_session(path)
             if not r:
                 continue
-            with open(out, "w") as f:
+            with open(out, "w", encoding="utf-8") as f:
                 f.write(r[4])
             done += 1
         try:
-            with open(out) as f:
+            with open(out, encoding="utf-8") as f:
                 head = f.read(400).splitlines()
             req = next((l for l in head if l and not l.startswith(("#", "date:"))), "")[:80]
             meta = next((l for l in head if l.startswith("date:")), "")
@@ -499,7 +502,7 @@ def cmd_compile(force=False, quiet=False):
             continue
     index.sort(reverse=True)
     idx_path = os.path.join(GROK_HQ, "INDEX.md")
-    with open(idx_path, "w") as f:
+    with open(idx_path, "w", encoding="utf-8") as f:
         f.write("# Grok HQ · compiled session index (newest first)\n\n"
                 + "\n".join(l for _, l in index) + "\n")
     if not quiet:
@@ -508,12 +511,16 @@ def cmd_compile(force=False, quiet=False):
 
 
 def cmd_brief(days=14, max_sessions=15):
+    print(brief_text(days, max_sessions))
+
+
+def brief_text(days=14, max_sessions=15, header=True):
     ensure_store()
     cmd_compile(quiet=True)
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).astimezone().strftime("%Y-%m-%d")
     cards = []
     for f in glob.glob(os.path.join(DIGEST_DIR, "*.md")):
-        with open(f) as fh:
+        with open(f, encoding="utf-8") as fh:
             txt = fh.read()
         m = re.search(r"date: (\S+) · project: (.+?) ·", txt)
         if not m or m.group(1) < cutoff:
@@ -528,7 +535,7 @@ def cmd_brief(days=14, max_sessions=15):
     cards.sort(reverse=True)
     lines = [
         f"# Grok HQ briefing (last {days}d, {min(len(cards), max_sessions)} of {len(cards)} sessions)"
-    ]
+    ] if header else []
     if not cards:
         lines.append("\n_(no digests yet — add sessions under ~/.grok-hq/sessions/ then `hq compile`)_")
     for day, proj, req, out in cards[:max_sessions]:
@@ -536,10 +543,11 @@ def cmd_brief(days=14, max_sessions=15):
         lines.append(f"- asked: {req}")
         if out:
             lines.append(f"- outcome: {out}")
-    lines.append(
-        f"\n_Digests: ~/.grok-hq/digests/ · search: `hq search \"terms\"` · replay: `hq show <id>`_"
-    )
-    print("\n".join(lines))
+    if header:
+        lines.append(
+            f"\n_Digests: ~/.grok-hq/digests/ · search: `hq search \"terms\"` · replay: `hq show <id>`_"
+        )
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- install / uninstall
@@ -575,9 +583,9 @@ def cmd_install():
     skill_src = os.path.join(HQ_DIR, "skills", "recall", "SKILL.md")
     skill_dst = os.path.join(SKILLS_DST, "recall", "SKILL.md")
     os.makedirs(os.path.dirname(skill_dst), exist_ok=True)
-    with open(skill_src) as s:
+    with open(skill_src, encoding="utf-8") as s:
         content = s.read().replace("{{HQ_PATH}}", os.path.join(HQ_DIR, "hq.py"))
-    with open(skill_dst, "w") as d:
+    with open(skill_dst, "w", encoding="utf-8") as d:
         d.write(content)
     print("  skill installed:  ~/.grok-hq/skills/recall")
     # policy
@@ -591,14 +599,17 @@ def cmd_install():
         "sessions_dir": SESSIONS_DIR,
         "usage_dir": USAGE_DIR,
     }
-    with open(CONFIG_PATH, "w") as f:
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
         f.write("\n")
     print(f"  config:          ~/.grok-hq/config.json")
     # adapters note
-    with open(os.path.join(GROK_HQ, "ADAPTERS.md"), "w") as f:
+    with open(os.path.join(GROK_HQ, "ADAPTERS.md"), "w", encoding="utf-8") as f:
         f.write(adapter_notes() + "\n")
     print("  adapters note:   ~/.grok-hq/ADAPTERS.md")
+    hub().ensure()
+    print("  shared memory:   ~/.grok-hq/hub/MEMORY.md  (edit this — every AI reads it)")
+    print("  sync config:     ~/.grok-hq/sync.json")
     n = seed_demo_sessions()
     if n:
         print(f"  seeded {n} demo file(s) into ~/.grok-hq/ (sessions/usage)")
@@ -606,7 +617,8 @@ def cmd_install():
         print(f"  sessions store:  ~/.grok-hq/sessions/ (ready)")
     print("\nDone. Alias tip:")
     print(f"  alias hq='python3 {os.path.join(HQ_DIR, 'hq.py')}'")
-    print("\nUninstall: python3 hq.py uninstall")
+    print("\nNext:  hq sync --status   then   hq sync   then   hq autopilot")
+    print("Uninstall: python3 hq.py uninstall")
 
 
 def cmd_uninstall():
@@ -629,7 +641,7 @@ def cmd_uninstall():
     # stop loop if running
     if os.path.exists(AUTOPILOT_PID):
         try:
-            with open(AUTOPILOT_PID) as f:
+            with open(AUTOPILOT_PID, encoding="utf-8") as f:
                 pid = int(f.read().strip())
             os.kill(pid, 15)
         except (OSError, ValueError):
@@ -663,7 +675,7 @@ while true; do
   sleep 600
 done
 """
-    with open(script, "w") as f:
+    with open(script, "w", encoding="utf-8") as f:
         f.write(body)
     os.chmod(script, 0o755)
     return script
@@ -673,15 +685,23 @@ def cmd_autopilot(action="on"):
     """Linux-first autopilot: loop script + cron/systemd notes. macOS launchd note too."""
     ensure_store()
     if action == "tick":
+        try:
+            cmd_sync(quiet=True)
+        except Exception as e:  # never let the background job die silently
+            with open(AUTOPILOT_LOG, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now(timezone.utc).isoformat()} sync error: {e}\n")
         cmd_compile(quiet=True)
         stamp = os.path.join(GROK_HQ, ".last-tick")
-        open(stamp, "w").close()
+        open(stamp, "w", encoding="utf-8").close()
         return
+
+    if sys.platform == "win32":
+        return _autopilot_windows(action)
 
     if action == "off":
         if os.path.exists(AUTOPILOT_PID):
             try:
-                with open(AUTOPILOT_PID) as f:
+                with open(AUTOPILOT_PID, encoding="utf-8") as f:
                     pid = int(f.read().strip())
                 os.kill(pid, 15)
                 print(f"Sent SIGTERM to autopilot pid {pid}")
@@ -719,7 +739,7 @@ def cmd_autopilot(action="on"):
     running = False
     if os.path.exists(AUTOPILOT_PID):
         try:
-            with open(AUTOPILOT_PID) as f:
+            with open(AUTOPILOT_PID, encoding="utf-8") as f:
                 pid = int(f.read().strip())
             os.kill(pid, 0)
             running = True
@@ -740,6 +760,88 @@ def cmd_autopilot(action="on"):
         print("  Digests recompile every 10 minutes. Stop with: hq autopilot off")
     elif not running:
         print("  (non-Linux) Start Option A/B/D yourself — stub ready.")
+
+
+WIN_TASK = "GrokHQ-Sync"
+
+
+def _autopilot_windows(action):
+    import subprocess
+    if action == "off":
+        r = subprocess.run(["schtasks", "/Delete", "/TN", WIN_TASK, "/F"],
+                           capture_output=True, text=True)
+        print((r.stdout or r.stderr).strip() or "Autopilot task removed.")
+        return
+    py = sys.executable
+    pyw = os.path.join(os.path.dirname(py), "pythonw.exe")
+    if os.path.exists(pyw):
+        py = pyw  # no console window flashing every 10 minutes
+    hq = os.path.join(HQ_DIR, "hq.py")
+    tr = f'"{py}" "{hq}" autopilot tick'
+    r = subprocess.run(["schtasks", "/Create", "/F", "/SC", "MINUTE", "/MO", "10",
+                        "/TN", WIN_TASK, "/TR", tr], capture_output=True, text=True)
+    if r.returncode == 0:
+        print(f"Autopilot on: Windows Task Scheduler runs `hq sync` every 10 minutes ({WIN_TASK}).")
+        print(f"  log: {AUTOPILOT_LOG}")
+        print("  stop: hq autopilot off")
+    else:
+        print("Could not create the scheduled task:")
+        print("  " + (r.stderr or r.stdout).strip())
+        print(f"  Manual: schtasks /Create /SC MINUTE /MO 10 /TN {WIN_TASK} /TR '{tr}'")
+
+
+# --------------------------------------------------------------------------- sync
+
+
+def hub():
+    import sync
+    return sync.Hub(sys.modules[__name__])
+
+
+def cmd_sync(status=False, dry=False, pull=True, push=True, add_project=None,
+             remove=False, quiet=False):
+    ensure_store()
+    h = hub()
+    cfg = h.config()
+    log = (lambda *_: None) if quiet else print
+    if add_project:
+        path = os.path.abspath(os.path.expanduser(add_project))
+        if not os.path.isdir(path):
+            print(f"Not a folder: {path}")
+            return
+        if path not in cfg["projects"]:
+            raw = json.loads(open(h.config_path, encoding="utf-8").read())
+            raw.setdefault("projects", []).append(path)
+            h.save_config(raw)
+            print(f"Added project: {path}")
+        cfg = h.config()
+    if status:
+        h.status(cfg)
+        return
+    if remove:
+        for name, path, _ in h.targets(cfg):
+            print(f"  {h.remove_block(path):<28} {name:<34} {path}")
+        print("Removed grok-hq blocks. Your own text in those files was left alone.")
+        return
+    log(f"Grok HQ sync{' (dry run)' if dry else ''}")
+    if pull:
+        h.pull(cfg, dry=dry, log=log)
+        if not dry:
+            cmd_compile(quiet=True)
+    if push:
+        h.push(cfg, dry=dry, log=log)
+    if not dry and not quiet:
+        print(f"\nShared memory: {h.memory}  (edit it; every AI reads it on next sync)")
+    if not dry:
+        stamp = os.path.join(GROK_HQ, ".last-sync")
+        open(stamp, "w", encoding="utf-8").close()
+
+
+def cmd_memory():
+    h = hub()
+    h.ensure()
+    print(h.memory + "\n")
+    print(open(h.memory, encoding="utf-8").read())
 
 
 def cmd_version():
@@ -779,11 +881,24 @@ def build_parser():
     pv.add_argument("--port", type=int, default=8765)
     pa = sub.add_parser("autopilot", help="background digest recompile (Linux-friendly)")
     pa.add_argument("action", nargs="?", default="on", choices=["on", "off", "tick"])
+    py = sub.add_parser("sync", help="sync history + shared context across all AI tools")
+    py.add_argument("--status", action="store_true", help="show detected tools and targets")
+    py.add_argument("--dry-run", action="store_true", help="show what would change")
+    py.add_argument("--pull-only", action="store_true")
+    py.add_argument("--push-only", action="store_true")
+    py.add_argument("--add-project", metavar="PATH", help="also sync into this project folder")
+    py.add_argument("--remove", action="store_true", help="remove grok-hq blocks from all targets")
+    sub.add_parser("memory", help="show the shared memory file")
     sub.add_parser("version", help="print version")
     return p
 
 
 def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):
+        try:  # Windows consoles default to cp1252; don't crash on · or Arabic text
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     argv = argv if argv is not None else sys.argv[1:]
     parser = build_parser()
     if not argv:
@@ -811,6 +926,11 @@ def main(argv=None):
         cmd_brief(days=args.days)
     elif args.cmd == "serve":
         cmd_serve(args.port)
+    elif args.cmd == "sync":
+        cmd_sync(status=args.status, dry=args.dry_run, pull=not args.push_only,
+                 push=not args.pull_only, add_project=args.add_project, remove=args.remove)
+    elif args.cmd == "memory":
+        cmd_memory()
     elif args.cmd == "autopilot":
         cmd_autopilot(args.action)
     else:
