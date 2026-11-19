@@ -311,12 +311,98 @@ class Hub:
                 pass
         return found
 
+    @staticmethod
+    def _rich_text(node):
+        """Flatten a ProseMirror-style richText doc (string or dict) to plain text."""
+        if isinstance(node, str):
+            try:
+                node = json.loads(node)
+            except json.JSONDecodeError:
+                return node
+        out = []
+
+        def walk(n):
+            if isinstance(n, list):
+                for c in n:
+                    walk(c)
+                return
+            if not isinstance(n, dict):
+                return
+            t = n.get("type")
+            if t == "text":
+                out.append(n.get("text", ""))
+            elif t == "hardBreak":
+                out.append("\n")
+            walk(n.get("content") or [])
+            if t in ("paragraph", "listItem", "heading"):
+                out.append("\n")
+
+        walk(node)
+        return re.sub(r"\n{3,}", "\n\n", "".join(out)).strip()
+
+    @classmethod
+    def extract_grokbot(cls, data):
+        """Grok Bot transcript: {"schemaVersion", "value": {"entries": [...]}}.
+        kind=message      -> role user/assistant, text in content / richText
+        kind=send-message -> Grok's reply, message.type text|email-draft|attachment|widget|user-form
+        kind=voice-call   -> conversation.turns[] {speaker, text}
+        """
+        entries = (data.get("value") or {}).get("entries") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            return cls.walk_messages(data)  # unknown layout: best effort
+        entries = [e for e in entries if isinstance(e, dict)]
+        entries.sort(key=lambda e: (e.get("timestampMs") or 0, e.get("seq") or 0))
+        out = []
+
+        def add(role, text, ts):
+            text = (text or "").strip()
+            if not text:
+                return
+            if out and out[-1]["role"] == role and out[-1]["text"] == text:
+                return  # streaming duplicates
+            out.append({"role": role, "text": text,
+                        "ts": (ts / 1000.0) if isinstance(ts, (int, float)) else ts})
+
+        for e in entries:
+            k, ts = e.get("kind"), e.get("timestampMs")
+            if k == "message":
+                role = cls.ROLE_MAP.get(str(e.get("role", "")).lower())
+                if not role:
+                    continue
+                c = e.get("content")
+                txt = c if isinstance(c, str) else _HQ.text_of(c)
+                if not str(txt).strip() and e.get("richText"):
+                    txt = cls._rich_text(e["richText"])
+                add(role, str(txt), ts)
+            elif k == "send-message":
+                m = e.get("message") or {}
+                t = m.get("type")
+                if t == "text":
+                    c = m.get("content")
+                    add("assistant", c if isinstance(c, str) else _HQ.text_of(c), ts)
+                elif t == "email-draft":
+                    d = m.get("draft") or {}
+                    to = d.get("to")
+                    to = ", ".join(to) if isinstance(to, list) else (to or "?")
+                    sent = " (sent)" if e.get("draftSendState") == "sent" else ""
+                    add("assistant", f"[email draft{sent}] to {to} - {d.get('subject') or ''}", ts)
+                elif t == "attachment":
+                    add("assistant", f"[attachment] {m.get('file_name') or m.get('alt') or ''}", ts)
+                # widget / user-form (login + password prompts): never imported
+            elif k == "voice-call":
+                for turn in ((e.get("conversation") or {}).get("turns") or []):
+                    role = cls.ROLE_MAP.get(str(turn.get("speaker", "")).lower())
+                    if role:
+                        add(role, turn.get("text") or _HQ.text_of(turn.get("content")),
+                            turn.get("atMs") or ts)
+        return out
+
     @classmethod
     def parse_grokbot(cls, path):
         kind, data = cls.load_blob(path)
         if kind in ("binary", "text"):
             return
-        for m in cls.walk_messages(data):
+        for m in cls.extract_grokbot(data):
             yield None, m
 
     def probe_grokbot(self, log=print):
@@ -358,7 +444,7 @@ class Hub:
                     else f"list[{len(data)}]"
             elif kind == "jsonl":
                 shape = f"rows={len(data)}"
-            msgs = self.walk_messages(data) if kind in ("json", "jsonl") else []
+            msgs = self.extract_grokbot(data) if kind in ("json", "jsonl") else []
             roles = {}
             for m in msgs:
                 roles[m["role"]] = roles.get(m["role"], 0) + 1
@@ -391,8 +477,10 @@ class Hub:
                         elif re.match(r"^\d{4}-\d\d-\d\dT", v):
                             tskeys[p] += 1
                         elif (enum_re.match(v) and not re.search(r"\d{4,}", v)
-                              and k.lower() not in ("title", "name", "text", "content",
-                                                    "message", "body", "query", "summary")):
+                              and k.lower() not in ("title", "name", "text", "content", "message",
+                                                    "body", "query", "summary", "alt", "label",
+                                                    "file_name", "filename", "vaultsite", "subject",
+                                                    "to", "from", "href", "url")):
                             enums.setdefault(p, Counter())[v] += 1
                     elif isinstance(v, (int, float)) and 1.3e9 < v < 2.2e12:
                         tskeys[p] += 1
