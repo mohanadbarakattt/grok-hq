@@ -366,7 +366,58 @@ class Hub:
                 f"messages={roles or 0}")
         if errors:
             log(f"  read errors: {errors}")
+        self._probe_schema(tr, log)
         log("\n  (no message text is shown — safe to paste this output)")
+
+    def _probe_schema(self, files, log):
+        """Field names + short enum-like values only (e.g. role/type labels). No text."""
+        from collections import Counter
+        shapes, enums, tskeys = Counter(), {}, Counter()
+        enum_re = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,30}$")
+
+        def walk(x, path, depth=0):
+            if depth > 30:
+                return
+            if isinstance(x, dict):
+                shapes[path + "{" + ",".join(sorted(x.keys()))[:160] + "}"] += 1
+                for k, v in x.items():
+                    p = path + "." + k
+                    if isinstance(v, str):
+                        if len(v) > 20 and v.lstrip()[:1] in "[{":
+                            try:
+                                walk(json.loads(v), p + "<json>", depth + 1)
+                            except json.JSONDecodeError:
+                                pass
+                        elif re.match(r"^\d{4}-\d\d-\d\dT", v):
+                            tskeys[p] += 1
+                        elif (enum_re.match(v) and not re.search(r"\d{4,}", v)
+                              and k.lower() not in ("title", "name", "text", "content",
+                                                    "message", "body", "query", "summary")):
+                            enums.setdefault(p, Counter())[v] += 1
+                    elif isinstance(v, (int, float)) and 1.3e9 < v < 2.2e12:
+                        tskeys[p] += 1
+                    else:
+                        walk(v, p, depth + 1)
+            elif isinstance(x, list):
+                for v in x[:200]:
+                    walk(v, path + "[]", depth + 1)
+
+        for f in sorted(files, key=lambda f: os.path.getsize(lp(f)) if os.path.exists(lp(f)) else 0,
+                        reverse=True)[:3]:
+            try:
+                kind, data = self.load_blob(f)
+            except OSError:
+                continue
+            if kind in ("json", "jsonl"):
+                walk(data, "$")
+        log("\n  SCHEMA (field names + labels only, no message text):")
+        for shape, n in shapes.most_common(25):
+            log(f"    {n:>5}x {shape}")
+        log("  label fields (distinct values <= 12):")
+        for p, c in sorted(enums.items()):
+            if len(c) <= 12:
+                log(f"    {p}: " + ", ".join(f"{v}={n}" for v, n in c.most_common()))
+        log("  timestamp-like fields: " + (", ".join(f"{p}={n}" for p, n in tskeys.most_common(8)) or "none"))
 
     def _codex_files(self):
         root = os.environ.get("CODEX_HOME") or os.path.join(self.home, ".codex")
